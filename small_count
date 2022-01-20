@@ -1,0 +1,65 @@
+getSize(){
+  while IFS= read -ra line
+  do
+    array=($line)
+    let size=${array[2]}
+    echo $size
+  done
+}
+getCount(){
+  bucket=$1
+  aws s3 ls --recursive s3://$bucket --endpoint=$ENDPOINT | 
+  {
+    getSize | 
+    {
+        while IFS= read -r size; 
+        do 
+            if [[ $size -lt 131072 ]]; 
+            then 
+                small="$((small+1))";
+                #printf "$size\n"; 
+            else
+                let big+=1
+            fi;
+            let total+=1
+             
+        done; 
+    
+        printf "%30s\t%14d\t%14d\t%14d\n" $bucket $small $big $total
+        #date
+    }
+  }
+}
+getBuckets(){
+  declare -a buckets; aws s3 ls --endpoint=$ENDPOINT | 
+  {
+    cut -d " " -f 3 | 
+    {
+        while IFS= read -r bucketname; 
+        do 
+            buckets+=($bucketname); 
+            #echo "${buckets[*]}"; 
+        done; 
+        echo "${buckets[@]}"
+    }
+  }
+}
+date
+touch ./start
+buckets=$(getBuckets)
+echo Counting objects in: $buckets
+printf "\n%30s\t%14s\t%14s\t%14s\n" "Bucket" "Small Objects" "Big Objects" "Total Objects"
+pids=()
+for bucket in ${buckets[@]}; 
+do
+  getCount $bucket& 
+  pid=$!
+  pids+=($pid)
+done
+for pid in ${pids[@]}
+do
+  wait $pid
+  echo $pid exited.
+  date
+done
+touch ./finish

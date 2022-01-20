@@ -1,0 +1,127 @@
+#!/bin/bash
+
+maxpool=4
+parray=()
+pnum=0
+temp="./.objcount"
+
+getPnum() {
+    jobs -lpr | cut -d " " -f 2 |
+    {
+      while IFS= read -r pid; do parray+=($pid); done;
+      pnum=${#parray[@]};
+      echo $pnum
+    }
+}
+
+getSize(){
+  while IFS= read -ra line
+  do
+    array=($line)
+    let size=${array[2]}
+    echo $size
+  done
+}
+
+getCount(){
+  bucket=$1
+  temp=$2
+  big=0
+  small=0
+  total=0
+  touch $temp/bucket_$bucket
+  status=InProgress_PID_$BASHPID
+  printf "%30s\t%14d\t%14d\t%14d\t%20s\n" $bucket $small $big $total $status > $temp/bucket_$bucket
+  aws s3 ls --recursive s3://$bucket --endpoint=$ENDPOINT | 
+  {
+    getSize | 
+    {
+        while IFS= read -r size; 
+        do 
+            if [[ $size -lt 131072 ]]; 
+            then 
+                small="$((small+1))";
+            else
+                let big+=1
+            fi;
+            let total+=1
+            if [[ $total%1000 -eq 0 ]]; then
+                printf "%30s\t%14d\t%14d\t%14d\t%20s\n" $bucket $small $big $total $status > $temp/bucket_$bucket
+            fi
+        done; 
+        status="Complete"
+        printf "%30s\t%14d\t%14d\t%14d\t%16s\n" $bucket $small $big $total $status >> $temp/summary.txt
+        rm -f $temp/bucket_$bucket
+        touch $temp/.stop
+    }
+  }
+}
+
+
+getBuckets(){
+  declare -a buckets; aws s3 ls --endpoint=$ENDPOINT | 
+  {
+    cut -d " " -f 3 | 
+    {
+        while IFS= read -r bucketname; 
+        do 
+            buckets+=($bucketname); 
+            #echo "${buckets[*]}"; 
+        done; 
+        echo "${buckets[@]}"
+    }
+  }
+}
+
+
+displayStats() {
+ temp=$1
+ cd $temp
+ cat summary.txt > $temp/progress.txt
+ if compgen -G  bucket_*>/dev/null ; then cat bucket_* >> $temp/progress.txt ; fi
+ cd
+}
+
+
+mkdir -p $temp
+rm -f $temp/*
+touch $temp/.start
+
+buckets=$(getBuckets)
+buckets=($buckets)
+maxruns=${#buckets[@]}
+echo Number of buckets: $maxruns
+
+printf "\n%30s\t%14s\t%14s\t%14s\t%16s\n" "Bucket" "Small Objects" "Big Objects" "Total Objects" "Progress"> $temp/summary.txt
+
+for (( i=0; i<$maxpool; i++ ))
+do
+  let launched+=1
+  echo Creating a pool. Launched $launched jobs in total.
+  getCount ${buckets[i]} $temp &
+  pnum=$(getPnum)
+  sleep 1
+done
+
+
+for (( i=$maxpool; i<$maxruns; i++ ))
+do
+    while [[ $pnum -ge $maxpool ]]
+    do
+      sleep 5;
+      pnum=$(getPnum)
+      date
+      displayStats $temp
+    done
+    let launched+=1
+    getCount ${buckets[i]} $temp &
+    pnum=$(getPnum)
+done
+
+sleep 5
+
+while compgen -G $temp/bucket_* > /dev/null
+do
+   sleep 5
+   displayStats $temp
+done
